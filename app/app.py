@@ -526,22 +526,44 @@ if driver:
                 # 按匹配度排序
                 matching_recipes.sort(key=lambda x: float(x['匹配度'].replace('%', '')), reverse=True)
                 
-                # 用卡片形式展示推荐结果
-                for recipe in matching_recipes[:10]:  # 最多显示10个
-                    with st.container():
-                        st.markdown(f"### 🥘 {recipe['菜名']}")
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            st.markdown("**✅ 已有的食材:**")
-                            st.markdown(recipe['匹配食材'], unsafe_allow_html=True)
-                        
-                        with col2:
-                            st.markdown("**❌ 需要补充的食材:**")
-                            st.markdown(recipe['缺少食材'], unsafe_allow_html=True)
-                        
-                        st.markdown(f"**匹配度:** {recipe['匹配度']} ({recipe['匹配数量']})")
-                        st.markdown("---")
+                # 创建表格数据
+                table_data = []
+                for recipe in matching_recipes[:10]:
+                    table_data.append({
+                        '菜品': recipe['菜名'],
+                        '已有的食材': recipe['匹配食材'].replace('<br>', '\n'),
+                        '缺少的食材': recipe['缺少食材'].replace('<br>', '\n'),
+                        '匹配度': recipe['匹配度'],
+                        '匹配数量': recipe['匹配数量']
+                    })
+                
+                # 显示表格
+                df = pd.DataFrame(table_data)
+                st.dataframe(df, use_container_width=True, column_config={
+                    '菜品': st.column_config.TextColumn('菜品', width='medium'),
+                    '已有的食材': st.column_config.TextColumn('已有的食材', width='large'),
+                    '缺少的食材': st.column_config.TextColumn('缺少的食材', width='large'),
+                    '匹配度': st.column_config.TextColumn('匹配度', width='small'),
+                    '匹配数量': st.column_config.TextColumn('匹配数量', width='small')
+                })
+                
+                # 详细卡片展示（可选展开）
+                with st.expander("查看详细信息"):
+                    for recipe in matching_recipes[:10]:
+                        with st.container():
+                            st.markdown(f"### 🥘 {recipe['菜名']}")
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.markdown("**✅ 已有的食材:**")
+                                st.markdown(recipe['匹配食材'], unsafe_allow_html=True)
+                            
+                            with col2:
+                                st.markdown("**❌ 需要补充的食材:**")
+                                st.markdown(recipe['缺少食材'], unsafe_allow_html=True)
+                            
+                            st.markdown(f"**匹配度:** {recipe['匹配度']} ({recipe['匹配数量']})")
+                            st.markdown("---")
             else:
                 st.warning("没有找到匹配的菜品，试试其他食材？")
         else:
