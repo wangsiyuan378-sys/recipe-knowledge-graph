@@ -60,16 +60,22 @@ st.markdown("""
 def get_neo4j_driver():
     try:
         driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+        # 测试连接
+        driver.verify_connectivity()
         return driver
     except Exception as e:
+        st.error(f"数据库连接失败: {str(e)}")
         return None
 
 def run_query(driver, query, params=None):
     results = []
-    with driver.session() as session:
-        result = session.run(query, params or {})
-        for record in result:
-            results.append(dict(record))
+    try:
+        with driver.session() as session:
+            result = session.run(query, params or {})
+            for record in result:
+                results.append(dict(record))
+    except Exception as e:
+        st.error(f"查询错误: {str(e)}")
     return results
 
 def get_stats(driver):
@@ -99,10 +105,10 @@ def get_recipe_details(driver, recipe_name):
     """
     recipe = run_query(driver, recipe_query, {'name': recipe_name})
     
-    # 获取原材料
+    # 获取原材料（使用 CONTAINS 以支持部分匹配）
     ingredients_query = """
-        MATCH (r:Recipe {name: $name})-[n:NEEDS]->(i:Ingredient)
-        RETURN i.name AS 原材料, n.quantity AS 用量, n.note AS 备注
+        MATCH (r:Recipe {name: $name})-[rel]->(i:Ingredient)
+        RETURN i.name AS 原材料, rel.quantity AS 用量, rel.note AS 备注
         ORDER BY i.name
     """
     ingredients = run_query(driver, ingredients_query, {'name': recipe_name})
@@ -117,8 +123,8 @@ def get_recipe_details(driver, recipe_name):
     
     # 获取推荐菜品
     recommend_query = """
-        MATCH (r:Recipe {name: $name})-[re:RECOMMENDS]->(r2:Recipe)
-        RETURN r2.name AS 推荐菜品, re.reason AS 推荐理由
+        MATCH (r:Recipe {name: $name})-[rel:RECOMMENDS]->(r2:Recipe)
+        RETURN r2.name AS 推荐菜品, rel.reason AS 推荐理由
     """
     recommendations = run_query(driver, recommend_query, {'name': recipe_name})
     
@@ -126,7 +132,7 @@ def get_recipe_details(driver, recipe_name):
 
 def search_by_ingredient(driver, ingredient_name):
     query = """
-        MATCH (r:Recipe)-[:NEEDS]->(i:Ingredient)
+        MATCH (r:Recipe)-[rel]->(i:Ingredient)
         WHERE i.name CONTAINS $ingredient
         RETURN DISTINCT r.name AS 菜名, r.category AS 菜系, r.difficulty AS 难度, r.cook_time AS 烹饪时间
         ORDER BY r.name
@@ -136,15 +142,15 @@ def search_by_ingredient(driver, ingredient_name):
 def get_ingredient_info(driver, ingredient_name):
     query = """
         MATCH (i:Ingredient {name: $name})
-        RETURN i.name AS 名称, i.category AS 类别, i.unit AS 单位, i.calories_per_100g AS 热量(每100克)
+        RETURN i.name AS 名称, i.category AS 类别, i.unit AS 单位, i.calories_per_100g AS 热量
     """
     return run_query(driver, query, {'name': ingredient_name})
 
 def get_recommendations(driver, recipe_name=None):
     if recipe_name:
         query = """
-            MATCH (r:Recipe {name: $name})-[re:RECOMMENDS]->(r2:Recipe)
-            RETURN r2.name AS 推荐菜品, r2.category AS 菜系, r2.difficulty AS 难度, re.reason AS 推荐理由
+            MATCH (r:Recipe {name: $name})-[rel:RECOMMENDS]->(r2:Recipe)
+            RETURN r2.name AS 推荐菜品, r2.category AS 菜系, r2.difficulty AS 难度, rel.reason AS 推荐理由
             ORDER BY r2.name
         """
         return run_query(driver, query, {'name': recipe_name})
@@ -173,6 +179,48 @@ def get_categories(driver):
     query = "MATCH (r:Recipe) RETURN DISTINCT r.category AS category ORDER BY category"
     results = run_query(driver, query)
     return [r['category'] for r in results]
+
+def get_recipe_full_details(driver, recipe_name):
+    """获取菜品的完整详细信息，包括所有制作步骤"""
+    recipe_query = """
+        MATCH (r:Recipe {name: $name})
+        RETURN r.name AS 菜名, r.category AS 菜系, r.difficulty AS 难度, 
+               r.cook_time AS 烹饪时间, r.description AS 描述, r.taste AS 口味
+    """
+    recipe = run_query(driver, recipe_query, {'name': recipe_name})
+    
+    if not recipe:
+        return None
+    
+    # 获取所有原材料（使用通用的关系类型匹配）
+    ingredients_query = """
+        MATCH (r:Recipe {name: $name})-[rel]->(i:Ingredient)
+        RETURN i.name AS 名称, i.category AS 类别, rel.quantity AS 用量, rel.note AS 备注
+        ORDER BY i.category, i.name
+    """
+    ingredients = run_query(driver, ingredients_query, {'name': recipe_name})
+    
+    # 获取制作步骤
+    steps_query = """
+        MATCH (r:Recipe {name: $name})-[:HAS_STEP]->(s:Step)
+        RETURN s.step_number AS 步骤编号, s.description AS 详细步骤, s.duration AS 预计时间
+        ORDER BY s.step_number
+    """
+    steps = run_query(driver, steps_query, {'name': recipe_name})
+    
+    # 获取技巧提示
+    tips_query = """
+        MATCH (r:Recipe {name: $name})-[:HAS_TIP]->(t:Tip)
+        RETURN t.content AS 技巧内容, t.category AS 类型
+    """
+    tips = run_query(driver, tips_query, {'name': recipe_name})
+    
+    return {
+        'basic': recipe[0] if recipe else None,
+        'ingredients': ingredients,
+        'steps': steps,
+        'tips': tips
+    }
 
 # 主程序
 driver = get_neo4j_driver()
@@ -240,30 +288,56 @@ if driver:
             recipe_info, ingredients, steps, recommendations = get_recipe_details(driver, selected_recipe)
             
             if recipe_info:
-                st.markdown(f"## {recipe_info['菜名']}")
-                col1, col2, col3 = st.columns(3)
+                st.markdown(f"## 🍳 {recipe_info['菜名']}")
+                
+                # 基本信息卡片
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
-                    st.info(f"**菜系**: {recipe_info['菜系']}")
+                    st.metric("菜系", recipe_info.get('菜系', '未知'))
                 with col2:
-                    st.info(f"**难度**: {recipe_info['难度']}")
+                    st.metric("难度", recipe_info.get('难度', '未知'))
                 with col3:
-                    st.info(f"**烹饪时间**: {recipe_info['烹饪时间']}")
-                st.markdown(f"**描述**: {recipe_info['描述']}")
+                    st.metric("烹饪时间", recipe_info.get('烹饪时间', '未知'))
+                with col4:
+                    if recipe_info.get('描述'):
+                        st.info(f"**描述**: {recipe_info['描述']}")
                 
                 # 原材料
                 st.markdown("---")
-                st.subheader("🥬 原材料")
+                st.subheader("🛒 所需原材料")
+                
                 if ingredients:
-                    st.dataframe(pd.DataFrame(ingredients), use_container_width=True)
+                    # 按类别分组显示
+                    df_ingredients = pd.DataFrame(ingredients)
+                    st.dataframe(df_ingredients, use_container_width=True)
+                    
+                    # 显示原材料列表（用于采购）
+                    st.markdown("**采购清单:**")
+                    ingredients_list = [f"{row['原材料']} - {row.get('用量', '')} {row.get('备注', '')}" 
+                                      for _, row in df_ingredients.iterrows()]
+                    for item in ingredients_list:
+                        st.write(f"• {item}")
                 else:
                     st.info("暂无原材料信息")
                 
                 # 制作步骤
                 st.markdown("---")
-                st.subheader("📝 制作步骤")
+                st.subheader("📝 详细制作步骤")
+                
                 if steps:
+                    for idx, step in enumerate(steps, 1):
+                        with st.container():
+                            col_left, col_right = st.columns([1, 5])
+                            with col_left:
+                                st.markdown(f"### {step['步骤']}")
+                            with col_right:
+                                st.write(step['说明'])
+                    st.markdown("---")
+                    
+                    # 步骤概览
+                    st.markdown("**步骤概览:**")
                     for step in steps:
-                        st.markdown(f"**{step['步骤']}.** {step['说明']}")
+                        st.write(f"**步骤 {step['步骤']}**: {step['说明'][:50]}...")
                 else:
                     st.info("暂无制作步骤")
                 
@@ -284,11 +358,13 @@ if driver:
         
         if st.button("搜索原材料", use_container_width=True):
             if search_ingredient:
+                # 显示原材料信息
                 info = get_ingredient_info(driver, search_ingredient)
                 if info:
+                    st.markdown("**原材料信息:**")
                     st.dataframe(pd.DataFrame(info), use_container_width=True)
                 else:
-                    st.warning("未找到该原材料")
+                    st.info("未找到该原材料的详细信息")
                 
                 # 显示用该原材料的菜品
                 st.markdown("---")
@@ -299,41 +375,67 @@ if driver:
                 else:
                     st.info("暂无使用该原材料的菜品")
         
-        # 浏览所有原材料
+        # 显示所有原材料
         st.markdown("---")
-        st.subheader("📦 所有原材料")
-        st.dataframe(pd.DataFrame({'原材料': all_ingredients}), use_container_width=True)
+        st.subheader("📦 全部原材料列表")
+        if all_ingredients:
+            # 每行显示4个
+            cols = st.columns(4)
+            for idx, ingredient in enumerate(all_ingredients):
+                with cols[idx % 4]:
+                    st.write(f"• {ingredient}")
     
     with recommend_tab:
-        st.subheader("✨ 智能推荐系统")
+        st.subheader("✨ 智能推荐")
         
         # 家常菜推荐
-        st.markdown("### 🏠 今日家常菜推荐")
+        st.markdown("### 🏠 推荐家常菜")
+        st.write("随机推荐简单易做的家常菜：")
+        
         home_recipes = get_recommendations(driver)
         if home_recipes:
-            home_df = pd.DataFrame(home_recipes)
-            st.dataframe(home_df, use_container_width=True)
+            st.dataframe(pd.DataFrame(home_recipes), use_container_width=True)
+        else:
+            st.info("暂无推荐")
         
-        # 根据已有菜品推荐
+        # 按口味推荐
         st.markdown("---")
-        st.subheader("🔗 搭配推荐")
-        all_recipes_list = get_all_recipes(driver)
-        selected_for_recommend = st.selectbox("选择一道菜，查看搭配推荐:", all_recipes_list)
+        st.subheader("🍽️ 根据现有食材推荐")
+        available_ingredients = st.text_input("输入你现有的食材（用逗号分隔）:", 
+                                             placeholder="例如：鸡蛋,西红柿,葱")
         
-        if st.button("获取推荐", use_container_width=True):
-            recommendations = get_recommendations(driver, selected_for_recommend)
-            if recommendations:
-                st.dataframe(pd.DataFrame(recommendations), use_container_width=True)
-            else:
-                st.info("暂无推荐搭配")
-
+        if st.button("推荐菜品", use_container_width=True):
+            if available_ingredients:
+                ingredients_list = [i.strip() for i in available_ingredients.split(',')]
+                
+                # 查找包含这些食材的菜品
+                all_recipes_list = get_all_recipes(driver)
+                matching_recipes = []
+                
+                for recipe in all_recipes_list:
+                    recipe_details = get_recipe_details(driver, recipe)
+                    if recipe_details[1]:  # ingredients
+                        recipe_ingredients = [ing['原材料'].lower() for ing in recipe_details[1]]
+                        # 检查有多少匹配
+                        matches = sum(1 for item in ingredients_list if any(item.lower() in ri for ri in recipe_ingredients))
+                        if matches > 0:
+                            matching_recipes.append({
+                                '菜名': recipe,
+                                '匹配食材数': matches,
+                                '总食材数': len(recipe_ingredients),
+                                '匹配度': f"{matches}/{len(recipe_ingredients)}"
+                            })
+                
+                if matching_recipes:
+                    # 按匹配度排序
+                    matching_recipes.sort(key=lambda x: x['匹配食材数'], reverse=True)
+                    st.markdown(f"**找到 {len(matching_recipes)} 道可以做的菜！**")
+                    st.dataframe(pd.DataFrame(matching_recipes), use_container_width=True)
+                else:
+                    st.warning("没有找到匹配的菜品")
+    
+    # 页脚
+    st.markdown("---")
+    st.markdown("🍳 美食食谱知识图谱 - 基于 Neo4j & Streamlit")
 else:
-    st.error("❌ 无法连接到数据库，请检查网络连接或联系管理员")
-
-st.markdown("---")
-st.markdown("""
-<div style="text-align: center; color: gray;">
-    <p>🍳 美食食谱知识图谱 | 基于 Neo4j + Streamlit</p>
-    <p>数据来源: 自制食谱数据集</p>
-</div>
-""", unsafe_allow_html=True)
+    st.error("❌ 无法连接到数据库，请检查连接配置")
