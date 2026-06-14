@@ -578,9 +578,9 @@ if driver:
         # 更多示例问题
         st.markdown("---")
         st.markdown("### 📝 更多问题示例")
-        more_cols = st.columns(2)
+        more_cols = st.columns(3)
         for idx, question in enumerate(example_questions[3:]):
-            if more_cols[idx].button(question, key=f"more_q_{idx}"):
+            if more_cols[idx % 3].button(question, key=f"more_q_{idx}"):
                 user_question = question
         
         # AI功能说明
