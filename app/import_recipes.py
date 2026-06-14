@@ -62,19 +62,32 @@ def import_ingredients(driver, csv_path):
 def import_recipe_ingredients(driver, csv_path):
     """导入食谱-原材料关系"""
     recipe_ingredients = pd.read_csv(os.path.join(csv_path, 'recipe_ingredients.csv'))
+    success_count = 0
+    fail_count = 0
+    
     with driver.session() as session:
         for _, row in recipe_ingredients.iterrows():
-            session.run("""
-                MATCH (r:Recipe {recipe_id: $recipe_id})
-                MATCH (i:Ingredient {name: $ingredient_name})
-                CREATE (r)-[:NEEDS {quantity: $quantity, note: $note}]->(i)
-            """, {
-                'recipe_id': row['recipe_id'],
-                'ingredient_name': row['ingredient_name'],
-                'quantity': row['quantity'],
-                'note': row['note'] if pd.notna(row['note']) else ''
-            })
-    print(f"已导入 {len(recipe_ingredients)} 个原材料关系")
+            try:
+                result = session.run("""
+                    MATCH (r:Recipe {recipe_id: $recipe_id})
+                    MATCH (i:Ingredient {name: $ingredient_name})
+                    CREATE (r)-[:NEEDS {quantity: $quantity, note: $note}]->(i)
+                    RETURN 1
+                """, {
+                    'recipe_id': int(row['recipe_id']),
+                    'ingredient_name': row['ingredient_name'],
+                    'quantity': row['quantity'],
+                    'note': row['note'] if pd.notna(row['note']) else ''
+                })
+                if result.single():
+                    success_count += 1
+                else:
+                    fail_count += 1
+            except Exception as e:
+                fail_count += 1
+                print(f"  失败: recipe_id={row['recipe_id']}, ingredient={row['ingredient_name']}")
+    
+    print(f"已导入 {success_count} 个原材料关系（失败 {fail_count} 个）")
 
 def import_recipe_steps(driver, csv_path):
     """导入制作步骤"""
