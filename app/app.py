@@ -478,11 +478,10 @@ if driver:
                                              placeholder="例如：鸡蛋,西红柿,葱")
         
         # 根据输入的食材推荐家常菜
-        st.markdown("### 🏠 推荐家常菜")
+        st.markdown("### 🏠 推荐菜谱")
         
         if available_ingredients:
             ingredients_list = [i.strip().lower() for i in available_ingredients.split(',')]
-            st.write(f"根据你现有的食材 **{', '.join(available_ingredients.split(','))}**，推荐以下菜品：")
             
             # 查找包含这些食材的菜品
             all_recipes_list = get_all_recipes(driver)
@@ -491,85 +490,60 @@ if driver:
             for recipe in all_recipes_list:
                 recipe_details = get_recipe_details(driver, recipe)
                 if recipe_details[1]:  # ingredients
-                    # 获取菜品的所有原材料（原始名称和小写名称）
+                    # 获取菜品基本信息
+                    recipe_info = recipe_details[0]
+                    # 获取菜品的所有原材料
                     recipe_ingredients_raw = [(ing['原材料'], ing['原材料'].lower(), ing['用量']) for ing in recipe_details[1]]
                     
-                    # 检查匹配的食材和需要补充的食材
-                    matched_ingredients = []
-                    missing_ingredients = []
-                    
-                    for ing_name, ing_lower, quantity in recipe_ingredients_raw:
-                        is_matched = False
-                        for user_ing in ingredients_list:
+                    # 检查匹配的食材和该食材的用量
+                    matched_info = []
+                    for user_ing in ingredients_list:
+                        for ing_name, ing_lower, quantity in recipe_ingredients_raw:
                             if user_ing in ing_lower or ing_lower in user_ing:
-                                matched_ingredients.append(f"✅ {ing_name} ({quantity})")
-                                is_matched = True
+                                matched_info.append(f"{ing_name} ({quantity})")
                                 break
-                        if not is_matched:
-                            missing_ingredients.append(f"❌ {ing_name} ({quantity})")
                     
                     # 只有当有匹配食材时才推荐
-                    if matched_ingredients:
-                        match_count = len(matched_ingredients)
-                        total_count = len(recipe_ingredients_raw)
-                        match_percentage = round((match_count / total_count) * 100, 1)
-                        
+                    if matched_info:
                         matching_recipes.append({
-                            '菜名': recipe,
-                            '匹配食材': "<br>".join(matched_ingredients),
-                            '缺少食材': "<br>".join(missing_ingredients) if missing_ingredients else "✅ 全部食材齐全",
-                            '匹配数量': f"{match_count}/{total_count}",
-                            '匹配度': f"{match_percentage}%"
+                            '菜品': recipe,
+                            '菜系': recipe_info.get('菜系', '未知'),
+                            '难度': recipe_info.get('难度', '未知'),
+                            '烹饪时间': recipe_info.get('烹饪时间', '未知'),
+                            '匹配食材': ', '.join(matched_info),
+                            '所需食材总数': len(recipe_ingredients_raw)
                         })
             
             if matching_recipes:
-                # 按匹配度排序
-                matching_recipes.sort(key=lambda x: float(x['匹配度'].replace('%', '')), reverse=True)
+                # 按匹配食材数量排序
+                matching_recipes.sort(key=lambda x: x['所需食材总数'])
                 
-                # 创建表格数据
-                table_data = []
-                for recipe in matching_recipes[:10]:
-                    table_data.append({
-                        '菜品': recipe['菜名'],
-                        '已有的食材': recipe['匹配食材'].replace('<br>', '\n'),
-                        '缺少的食材': recipe['缺少食材'].replace('<br>', '\n'),
-                        '匹配度': recipe['匹配度'],
-                        '匹配数量': recipe['匹配数量']
-                    })
+                st.markdown(f"### 🎯 根据食材 **{', '.join(available_ingredients.split(','))}** 找到 {len(matching_recipes)} 道推荐菜品")
                 
-                # 显示表格
-                df = pd.DataFrame(table_data)
+                # 创建推荐菜谱表格
+                df = pd.DataFrame(matching_recipes)
                 st.dataframe(df, use_container_width=True, column_config={
                     '菜品': st.column_config.TextColumn('菜品', width='medium'),
-                    '已有的食材': st.column_config.TextColumn('已有的食材', width='large'),
-                    '缺少的食材': st.column_config.TextColumn('缺少的食材', width='large'),
-                    '匹配度': st.column_config.TextColumn('匹配度', width='small'),
-                    '匹配数量': st.column_config.TextColumn('匹配数量', width='small')
+                    '菜系': st.column_config.TextColumn('菜系', width='small'),
+                    '难度': st.column_config.TextColumn('难度', width='small'),
+                    '烹饪时间': st.column_config.TextColumn('烹饪时间', width='small'),
+                    '匹配食材': st.column_config.TextColumn('匹配食材', width='large'),
+                    '所需食材总数': st.column_config.NumberColumn('所需食材总数', width='small')
                 })
                 
-                # 详细卡片展示（可选展开）
-                with st.expander("查看详细信息"):
-                    for recipe in matching_recipes[:10]:
-                        with st.container():
-                            st.markdown(f"### 🥘 {recipe['菜名']}")
-                            col1, col2 = st.columns(2)
-                            
-                            with col1:
-                                st.markdown("**✅ 已有的食材:**")
-                                st.markdown(recipe['匹配食材'], unsafe_allow_html=True)
-                            
-                            with col2:
-                                st.markdown("**❌ 需要补充的食材:**")
-                                st.markdown(recipe['缺少食材'], unsafe_allow_html=True)
-                            
-                            st.markdown(f"**匹配度:** {recipe['匹配度']} ({recipe['匹配数量']})")
-                            st.markdown("---")
+                # 添加说明
+                st.markdown("---")
+                st.markdown("💡 **使用说明:**")
+                st.markdown("1. 输入你现有的食材，系统会自动匹配包含这些食材的菜品")
+                st.markdown("2. 表格按食材总数排序，食材少的菜品更容易制作")
+                st.markdown("3. 点击菜品名称可在【菜品详情】页查看完整做法")
+                
             else:
-                st.warning("没有找到匹配的菜品，试试其他食材？")
+                st.warning("没有找到包含这些食材的菜品，试试其他食材？")
         else:
             # 如果没有输入食材，显示随机推荐的家常菜
-            st.write("输入你现有的食材，为你推荐可以做的家常菜！")
-            st.write("暂时推荐一些简单易做的家常菜：")
+            st.write("### 📌 热门家常菜推荐")
+            st.write("输入食材获取个性化推荐，或查看以下热门菜品：")
             
             home_recipes = get_recommendations(driver)
             if home_recipes:
