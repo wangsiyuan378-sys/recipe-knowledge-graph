@@ -66,11 +66,11 @@ def import_recipe_ingredients(driver, csv_path):
         for _, row in recipe_ingredients.iterrows():
             session.run("""
                 MATCH (r:Recipe {recipe_id: $recipe_id})
-                MATCH (i:Ingredient {ingredient_id: $ingredient_id})
+                MATCH (i:Ingredient {name: $ingredient_name})
                 CREATE (r)-[:NEEDS {quantity: $quantity, note: $note}]->(i)
             """, {
                 'recipe_id': row['recipe_id'],
-                'ingredient_id': row['ingredient_id'],
+                'ingredient_name': row['ingredient_name'],
                 'quantity': row['quantity'],
                 'note': row['note'] if pd.notna(row['note']) else ''
             })

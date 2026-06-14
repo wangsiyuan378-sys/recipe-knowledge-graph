@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from neo4j import GraphDatabase
 import os
+from deepseek_client import get_deepseek_client, DeepSeekClient
 
 # 配置信息
 NEO4J_URI = os.getenv("NEO4J_URI", "neo4j+s://3ab79b4e.databases.neo4j.io")
@@ -222,6 +223,89 @@ def get_recipe_full_details(driver, recipe_name):
         'tips': tips
     }
 
+def get_recipe_context_for_ai(driver, keyword):
+    """
+    获取指定关键词相关的食谱上下文，用于发送给AI
+    """
+    context = ""
+    
+    # 首先尝试精确匹配菜名
+    exact_query = """
+        MATCH (r:Recipe {name: $name})
+        OPTIONAL MATCH (r)-[rel]->(i:Ingredient)
+        OPTIONAL MATCH (r)-[:HAS_STEP]->(s:Step)
+        RETURN r.name AS name, r.category AS category, r.difficulty AS difficulty, 
+               r.cook_time AS cook_time, r.description AS description, r.taste AS taste,
+               collect(DISTINCT {name: i.name, quantity: rel.quantity, note: rel.note}) AS ingredients,
+               collect(DISTINCT {step: s.step_number, description: s.description, duration: s.duration}) AS steps
+    """
+    exact_results = run_query(driver, exact_query, {'name': keyword})
+    
+    if exact_results and exact_results[0].get('name'):
+        result = exact_results[0]
+        context = f"""## 食谱: {result.get('name')}
+
+**基本信息:**
+- 菜系: {result.get('category', '未知')}
+- 难度: {result.get('difficulty', '未知')}
+- 烹饪时间: {result.get('cook_time', '未知')}
+- 口味: {result.get('taste', '未知')}
+- 描述: {result.get('description', '暂无描述')}
+
+**所需原材料:**
+"""
+        ingredients = result.get('ingredients', [])
+        if ingredients and ingredients[0].get('name'):
+            for ing in ingredients:
+                context += f"- {ing.get('name')}: {ing.get('quantity', '')} {ing.get('note', '')}\n"
+        else:
+            context += "暂无原材料信息\n"
+        
+        context += "\n**制作步骤:**\n"
+        steps = result.get('steps', [])
+        if steps and steps[0].get('step'):
+            for step in steps:
+                context += f"步骤{step.get('step')}: {step.get('description', '')} (约{step.get('duration', '')})\n"
+        else:
+            context += "暂无制作步骤\n"
+        
+        return context
+    
+    # 如果没有精确匹配，尝试模糊搜索
+    fuzzy_query = """
+        MATCH (r:Recipe)
+        WHERE r.name CONTAINS $keyword OR r.description CONTAINS $keyword
+        RETURN r.name AS name, r.category AS category, r.difficulty AS difficulty, 
+               r.cook_time AS cook_time, r.description AS description, r.taste AS taste
+        LIMIT 10
+    """
+    fuzzy_results = run_query(driver, fuzzy_query, {'keyword': keyword})
+    
+    if fuzzy_results:
+        context = f"## 搜索 '{keyword}' 相关的食谱:\n\n"
+        for r in fuzzy_results:
+            context += f"""### {r.get('name')}
+- 菜系: {r.get('category', '未知')}
+- 难度: {r.get('difficulty', '未知')}
+- 烹饪时间: {r.get('cook_time', '未知')}
+- 口味: {r.get('taste', '未知')}
+- 描述: {r.get('description', '暂无描述')}
+
+"""
+        return context
+    
+    # 如果还是没有结果，获取所有食谱列表
+    all_recipes_query = "MATCH (r:Recipe) RETURN r.name AS name ORDER BY r.name LIMIT 50"
+    all_recipes = run_query(driver, all_recipes_query)
+    
+    if all_recipes:
+        context = "## 知识图谱中的部分食谱列表:\n\n"
+        for r in all_recipes:
+            context += f"- {r.get('name')}\n"
+        return context
+    
+    return "知识图谱中暂无相关信息。"
+
 # 主程序
 driver = get_neo4j_driver()
 
@@ -242,11 +326,12 @@ if driver:
     st.markdown("---")
     
     # 搜索功能
-    search_tab, recipe_tab, ingredient_tab, recommend_tab = st.tabs([
+    search_tab, recipe_tab, ingredient_tab, recommend_tab, ai_tab = st.tabs([
         "🔍 菜品搜索", 
         "📋 菜品详情", 
         "🥬 原材料查询", 
-        "✨ 智能推荐"
+        "✨ 智能推荐",
+        "🤖 AI智能问答"
     ])
     
     with search_tab:
@@ -433,6 +518,88 @@ if driver:
                     st.dataframe(pd.DataFrame(matching_recipes), use_container_width=True)
                 else:
                     st.warning("没有找到匹配的菜品")
+    
+    with ai_tab:
+        st.subheader("🤖 AI智能问答")
+        st.write("基于知识图谱数据，向AI询问任何关于美食烹饪的问题！")
+        
+        # 初始化 DeepSeek 客户端
+        deepseek_client = get_deepseek_client()
+        
+        # 显示可查询的示例问题
+        st.markdown("### 💡 可以问的问题示例")
+        example_questions = [
+            "西红柿炒鸡蛋怎么做？",
+            "宫保鸡丁需要哪些食材？",
+            "教我做一道简单的家常菜",
+            "红烧肉的做法步骤",
+            "如何做出一道好吃的糖醋排骨？",
+            "有什么适合新手的川菜推荐？"
+        ]
+        
+        # 问题输入
+        user_question = st.text_area(
+            "输入你的问题:",
+            placeholder="例如：西红柿炒鸡蛋怎么做？需要什么食材？",
+            height=100
+        )
+        
+        # 快速问题按钮
+        st.markdown("**快速提问:**")
+        quick_cols = st.columns(3)
+        for idx, question in enumerate(example_questions[:3]):
+            if quick_cols[idx].button(question, key=f"quick_q_{idx}"):
+                user_question = question
+        
+        if st.button("向AI提问", use_container_width=True, type="primary"):
+            if user_question:
+                with st.spinner("🤖 AI正在思考中..."):
+                    # 从问题中提取关键词来获取相关食谱上下文
+                    # 简单策略：提取菜名（假设问题中包含菜名）
+                    keywords = user_question.replace("怎么做", "").replace("如何做", "").replace("?", "").replace("？", "").strip()
+                    
+                    # 获取相关食谱上下文
+                    context = get_recipe_context_for_ai(driver, keywords)
+                    
+                    # 调用 DeepSeek API
+                    ai_response = deepseek_client.ask_recipe_question(user_question, context)
+                    
+                    # 显示回答
+                    st.markdown("### 💬 AI回答")
+                    st.info(ai_response)
+                    
+                    # 显示相关的知识图谱数据
+                    st.markdown("### 📊 知识图谱中的相关信息")
+                    if "食谱:" in context or "搜索" in context:
+                        st.text_area("相关数据", context, height=200, disabled=True, key="context_display")
+            else:
+                st.warning("请输入你的问题")
+        
+        # 更多示例问题
+        st.markdown("---")
+        st.markdown("### 📝 更多问题示例")
+        more_cols = st.columns(2)
+        for idx, question in enumerate(example_questions[3:]):
+            if more_cols[idx].button(question, key=f"more_q_{idx}"):
+                user_question = question
+        
+        # AI功能说明
+        st.markdown("---")
+        with st.expander("ℹ️ AI问答功能说明"):
+            st.markdown("""
+            **这个AI助手可以帮你：**
+            - 回答关于食谱做法的问题
+            - 提供烹饪技巧和建议
+            - 根据你的食材推荐菜品
+            - 解释各种菜系的特点
+            
+            **使用方法：**
+            1. 在上方输入框中输入你的问题
+            2. 点击"向AI提问"按钮
+            3. AI会结合知识图谱中的数据给出回答
+            
+            **AI回答基于知识图谱数据，确保信息准确可靠！**
+            """)
     
     # 页脚
     st.markdown("---")
